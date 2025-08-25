@@ -6,10 +6,8 @@ import { cn } from '@/lib/utils';
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import companyPrompt from '../companyPrompt'; // adjust path if needed
 
-
 type VoiceChatState = 'idle' | 'listening' | 'processing' | 'speaking';
 const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
-
 const genAI = new GoogleGenerativeAI(apiKey);
 
 export const VoiceChat = () => {
@@ -22,11 +20,13 @@ export const VoiceChat = () => {
 
   // --- Start recording ---
   const startRecording = () => {
+    if (state !== 'idle') return;
+
     const SpeechRecognition =
       (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
     if (!SpeechRecognition) return alert('SpeechRecognition API not supported');
 
-    // Always create a NEW recognition instance
+    // Create a fresh instance
     const recog = new SpeechRecognition();
     recog.lang = 'en-US';
     recog.interimResults = false;
@@ -39,25 +39,22 @@ export const VoiceChat = () => {
     };
 
     recog.onresult = (event: any) => {
+      if (!recognitionRef.current) return;
       const text = event.results[0][0].transcript;
       setTranscript(text);
       setState('processing');
       sendToGemini(text);
     };
 
-    recog.onend = () => {
-      // reset ref so we can start fresh next time
-      recognitionRef.current = null;
-      // only reset to idle if we’re not already processing/speaking
-      if (state === 'listening') {
-        setState('idle');
-      }
-    };
-
-    recog.onerror = (e) => {
+    recog.onerror = (e: any) => {
       console.error(e);
       setResponse('Speech recognition error.');
       setState('idle');
+      recognitionRef.current = null;
+    };
+
+    recog.onend = () => {
+      if (state === 'listening') setState('idle');
       recognitionRef.current = null;
     };
 
@@ -68,23 +65,23 @@ export const VoiceChat = () => {
   // --- Stop recording ---
   const stopRecording = () => {
     if (recognitionRef.current) {
-      recognitionRef.current.onend = null; 
+      recognitionRef.current.onend = null;
       recognitionRef.current.stop();
       recognitionRef.current = null;
     }
   };
 
+  // --- Stop speaking ---
   const stopSpeaking = () => {
     window.speechSynthesis.cancel();
     setState('idle');
   };
 
-  // --- Browser TTS (instant) ---
+  // --- Speak text ---
   const speakText = (text: string) => {
     if (!text) return;
     window.speechSynthesis.cancel();
 
-    // Detect Hindi characters
     const isHindi = /[\u0900-\u097F]/.test(text);
     const lang = isHindi ? 'hi-IN' : 'en-US';
 
@@ -92,15 +89,12 @@ export const VoiceChat = () => {
     utterance.lang = lang;
     utterance.rate = 1;
     utterance.pitch = 1;
-    utterance.onend = () => {
-      // when speech ends, allow new input
-      setState('idle');
-    };
+    utterance.onend = () => setState('idle');
 
     window.speechSynthesis.speak(utterance);
   };
 
-  // --- Send text to Gemini chat ---
+  // --- Gemini API call with timeout ---
   const sendToGemini = async (text: string) => {
     try {
       if (!apiKey) {
@@ -108,10 +102,16 @@ export const VoiceChat = () => {
         setState('idle');
         return;
       }
-      const finalPrompt = `${companyPrompt}\n\nUser: ${text}\nAssistant:`;
 
+      const finalPrompt = `${companyPrompt}\n\nUser: ${text}\nAssistant:`;
       const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-      const result = await model.generateContent(finalPrompt);
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
+      const result = await model.generateContent(finalPrompt, { signal: controller.signal });
+      clearTimeout(timeout);
+
       const responseText = await result.response.text();
 
       setResponse(responseText);
@@ -126,18 +126,13 @@ export const VoiceChat = () => {
     }
   };
 
+  // --- Handle button press ---
   const handleVoiceButton = () => {
     if (state === 'idle') {
-      setTranscript('');
-      setResponse('');
-      // Always cancel any ongoing speech before starting recognition
       window.speechSynthesis.cancel();
-      // Add a short delay to ensure speech engine is stopped
-      setTimeout(() => {
-        startRecording();
-      }, 150);
+      setTimeout(() => startRecording(), 100);
     } else if (state === 'speaking') {
-      stopSpeaking(); // allow interruption
+      stopSpeaking();
     } else if (state === 'listening') {
       stopRecording();
     }
@@ -154,7 +149,7 @@ export const VoiceChat = () => {
       case 'listening': return 'Listening...';
       case 'processing': return 'Processing...';
       case 'speaking': return 'Speaking...';
-      default: return 'Tap and hold to start talking';
+      default: return 'Tap to talk';
     }
   };
 
@@ -171,11 +166,7 @@ export const VoiceChat = () => {
         <div className="space-y-6">
           <div className="relative">
             <Button
-              onMouseDown={handleVoiceButton}
-              onMouseUp={() => state === 'listening' && stopRecording()}
-              onMouseLeave={() => state === 'listening' && stopRecording()}
-              onTouchStart={handleVoiceButton}
-              onTouchEnd={() => state === 'listening' && stopRecording()}
+              onClick={handleVoiceButton}
               size="lg"
               variant="voice"
               className={cn(
@@ -238,7 +229,7 @@ export const VoiceChat = () => {
         </div>
 
         <div className="text-xs text-muted-foreground space-y-1">
-          <p>• Tap and hold to speak</p>
+          <p>• Tap to speak</p>
           <p>• You can interrupt Rev while speaking</p>
           <p>• Supports multiple languages</p>
         </div>
