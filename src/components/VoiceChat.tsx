@@ -40,6 +40,8 @@ export const VoiceChat = () => {
       setState('listening');
     } catch (error) {
       console.error('Error accessing microphone:', error);
+      alert('Please allow microphone access to use voice chat.');
+      setState('idle');
     }
   };
 
